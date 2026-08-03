@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>dev.serna.banglebridge</string>
+    <key>CFBundleName</key>
+    <string>banglebridge</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>banglebridge sends notifications to your Bangle.js watch over Bluetooth.</string>
+</dict>
+</plist>

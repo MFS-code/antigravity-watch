@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+tools/banglebridge
+tools/bridge.log
+tools/bridge.err
+tools/payload.bin
+tools/gemini.key
+tools/BangleBridge.app/
+tools/daemon.log
+tools/bridge.cmd
+tools/.app-installed
