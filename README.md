@@ -6,7 +6,8 @@ Your watch shows what the Antigravity agent is doing, live:
 |---|---|---|
 | IDLE | dark | — |
 | WORKING | blue | tiny tick |
-| NEEDS YOU | orange | double buzz |
+| NEEDS YOU | orange (approval pending) | double buzz |
+| NEEDS ATTENTION | yellow (the agent asked you a question — shown on screen) | triple buzz |
 | DONE | green (+ optional summary) | long buzz |
 
 With `--summarize`, a Gemini flash-lite call turns the agent's final

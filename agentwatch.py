@@ -40,7 +40,7 @@ TRANSCRIPT_ROOTS = [
 ]
 TRANSCRIPT_GLOB = "*/.system_generated/logs/transcript.jsonl"
 
-STATES = ("idle", "working", "waiting", "done")
+STATES = ("idle", "working", "waiting", "attention", "done")
 # substrings in a step's status that mean "agent is waiting on the user"
 WAITING_MARKERS = ("USER", "PENDING", "AWAIT", "APPROV")
 
@@ -213,7 +213,7 @@ def app_bundle():
         src = f.read()
     lines = storage_lines("agentwatch.app.js", src)
     info = {"id": "agentwatch", "name": "Antigravity", "type": "app",
-            "src": "agentwatch.app.js", "version": "0.4"}
+            "src": "agentwatch.app.js", "version": "0.5"}
     icon = b""
     icon_path = os.path.join(HERE, "watchapp", "agentwatch.img")
     if os.path.exists(icon_path):
@@ -379,7 +379,12 @@ class StateTracker:
         if (m and m.get("type") == "PLANNER_RESPONSE"
                 and str(m.get("status", "")).upper() == "DONE"
                 and now - self.last_model_time[newest] >= self.settle):
-            return "done", m.get("content", "")
+            content = m.get("content", "")
+            # a turn that ends with a question is the editor asking the
+            # user something, not a finished task
+            if clean_markdown(content).endswith("?"):
+                return "attention", content
+            return "done", content
         return "working", ""
 
 
@@ -390,6 +395,14 @@ def clean_markdown(text: str) -> str:
     t = re.sub(r"\$[^$\n]*\$", " ", t)          # inline LaTeX
     t = re.sub(r"[*_#>|~]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def question_snippet(content: str, limit: int = 120) -> str:
+    """The final question of the response, trimmed for the watch screen."""
+    t = clean_markdown(content)
+    cut = t.rfind("?", 0, len(t) - 1)  # start after any previous question
+    tail = t[cut + 1:].strip() if cut != -1 else t
+    return tail[-limit:] if len(tail) > limit else tail
 
 
 def get_gemini_key(args) -> str:
@@ -508,8 +521,11 @@ def main():
             if state != current:
                 current = state
                 current_msg = ""
-                # buzz immediately with no text; the summary follows silently
-                send_state(state, "", args)
+                if state == "attention" and content:
+                    # show the actual question right away
+                    current_msg = question_snippet(content)
+                # buzz immediately; done-summaries follow silently
+                send_state(state, current_msg, args)
                 last_sent = time.time()
                 if state == "done" and args.summarize and content:
                     summarize_async(content)

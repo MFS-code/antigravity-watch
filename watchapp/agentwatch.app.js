@@ -6,10 +6,11 @@ var st = "";
 var msg = "";
 var since = Date();
 var C = {
-  idle:    { bg:"#222222", fg:"#888888", label:"IDLE" },
-  working: { bg:"#003399", fg:"#ffffff", label:"WORKING" },
-  waiting: { bg:"#cc4400", fg:"#ffffff", label:"NEEDS YOU" },
-  done:    { bg:"#007700", fg:"#ffffff", label:"DONE" }
+  idle:      { bg:"#222222", fg:"#888888", label:"IDLE" },
+  working:   { bg:"#003399", fg:"#ffffff", label:"WORKING" },
+  waiting:   { bg:"#cc4400", fg:"#ffffff", label:"NEEDS YOU" },
+  attention: { bg:"#e6c200", fg:"#000000", label:"NEEDS", label2:"ATTENTION" },
+  done:      { bg:"#007700", fg:"#ffffff", label:"DONE" }
 };
 
 function pad(n) { return ("0" + n).substr(-2); }
@@ -21,7 +22,12 @@ function draw() {
   g.setFont("6x8", 2);
   g.drawString("ANTIGRAVITY", 88, 22);
   g.setFont("6x8", st ? 3 : 2);
-  g.drawString(c.label, 88, 74);
+  if (c.label2) {
+    g.drawString(c.label, 88, 62);
+    g.drawString(c.label2, 88, 88);
+  } else {
+    g.drawString(c.label, 88, 74);
+  }
   g.setFont("6x8", 1);
   if (msg) {
     var lines = g.wrapString(msg, 164).slice(0, 4);
@@ -46,6 +52,10 @@ global._AW = function (s, m) {
       Bangle.buzz(150).then(function () {
         setTimeout(function () { Bangle.buzz(150); }, 180);
       });
+    } else if (s == "attention") {
+      Bangle.buzz(100);
+      setTimeout(function () { Bangle.buzz(100); }, 200);
+      setTimeout(function () { Bangle.buzz(100); }, 400);
     } else if (s == "working") {
       Bangle.buzz(40);
     }
