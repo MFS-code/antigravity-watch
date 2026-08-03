@@ -351,6 +351,7 @@ class StateTracker:
         self.last_step = {}       # path -> last parsed step (any source)
         self.last_model = {}      # path -> last step with source == MODEL
         self.last_model_time = {} # path -> when we observed that model step
+        self.last_user_time = {}  # path -> when we observed a USER_* step
         self.last_append = {}     # path -> time of last observed growth
         self.started = time.time()
 
@@ -384,6 +385,8 @@ class StateTracker:
                     if step.get("source") == "MODEL":
                         self.last_model[path] = step
                         self.last_model_time[path] = now
+                    elif str(step.get("source", "")).startswith("USER"):
+                        self.last_user_time[path] = now
                 if new:
                     self.last_append[path] = now
         return self.state(now)
@@ -404,7 +407,10 @@ class StateTracker:
         m = self.last_model.get(newest)
         if (m and m.get("type") == "PLANNER_RESPONSE"
                 and str(m.get("status", "")).upper() == "DONE"
-                and now - self.last_model_time[newest] >= self.settle):
+                and now - self.last_model_time[newest] >= self.settle
+                # a user message after the response means a new turn began:
+                # the agent is working again even before its first step lands
+                and self.last_model_time[newest] >= self.last_user_time.get(newest, 0)):
             return "done", m.get("content", "")
         return "working", ""
 
