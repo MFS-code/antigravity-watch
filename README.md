@@ -111,9 +111,11 @@ the demo trade-off. Exiting the app restores normal lock/timeout behavior.
 
 - The watch holds one BLE connection: while the daemon is connected, the
   Web IDE / App Loader can't see the watch. `pkill -f banglebridge` frees it.
-- "NEEDS YOU" detection is heuristic (step status containing
-  PENDING/AWAIT/APPROV/USER) — untested against a real approval pause;
-  tune `WAITING_MARKERS` in agentwatch.py if it misses.
+- Questions and approvals are detected from Antigravity's live
+  per-conversation sqlite DBs (`~/.gemini/antigravity*/conversations/*.db`,
+  step status 9 = awaiting user; type 138 = question, whose text is shown
+  on the watch). The transcripts alone can't see them — pending steps are
+  only appended there after they resolve.
 - Antigravity's transcript format is internal and may change.
 
 ## Provenance

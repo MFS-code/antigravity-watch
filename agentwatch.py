@@ -40,6 +40,16 @@ TRANSCRIPT_ROOTS = [
 ]
 TRANSCRIPT_GLOB = "*/.system_generated/logs/transcript.jsonl"
 
+# live per-conversation sqlite DBs — unlike the transcripts, these contain
+# steps that are still awaiting the user (questions, approvals) in real time
+CONV_ROOTS = [
+    os.path.expanduser("~/.gemini/antigravity-ide/conversations"),
+    os.path.expanduser("~/.gemini/antigravity/conversations"),
+]
+STEP_TYPE_ASK_QUESTION = 138
+STATUS_DONE = 3
+STATUS_AWAITING_USER = 9
+
 STATES = ("idle", "working", "waiting", "attention", "done")
 # substrings in a step's status that mean "agent is waiting on the user"
 WAITING_MARKERS = ("USER", "PENDING", "AWAIT", "APPROV")
@@ -395,12 +405,7 @@ class StateTracker:
         if (m and m.get("type") == "PLANNER_RESPONSE"
                 and str(m.get("status", "")).upper() == "DONE"
                 and now - self.last_model_time[newest] >= self.settle):
-            content = m.get("content", "")
-            # a turn that ends with a question is the editor asking the
-            # user something, not a finished task
-            if clean_markdown(content).endswith("?"):
-                return "attention", content
-            return "done", content
+            return "done", m.get("content", "")
         return "working", ""
 
 
@@ -411,6 +416,66 @@ def clean_markdown(text: str) -> str:
     t = re.sub(r"\$[^$\n]*\$", " ", t)          # inline LaTeX
     t = re.sub(r"[*_#>|~]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def question_from_payload(blob: bytes) -> str:
+    """The question text inside an ASK_QUESTION step's protobuf payload."""
+    m = re.search(rb'\{"questions".*', blob or b"")
+    if m:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(m.group(0).decode("utf-8", "replace"))
+            q = obj["questions"][0]
+            return q.get("question") or obj.get("toolSummary") or ""
+        except (ValueError, KeyError, IndexError):
+            pass
+    return ""
+
+
+def _read_pending(dbpath: str, tmpdir: str):
+    """Check one conversation DB for a step awaiting the user.
+
+    The DB is WAL-mode and locked by the IDE, so read a copy."""
+    import shutil
+    import sqlite3
+    base = os.path.join(tmpdir, "conv.db")
+    for ext in ("", "-wal", "-shm"):
+        if os.path.exists(dbpath + ext):
+            shutil.copy(dbpath + ext, base + ext)
+        elif os.path.exists(base + ext):
+            os.remove(base + ext)
+    con = sqlite3.connect(base)
+    try:
+        rows = con.execute("SELECT idx, step_type, status FROM steps "
+                           "ORDER BY idx DESC LIMIT 3").fetchall()
+        for idx, typ, status in rows:
+            if status == STATUS_AWAITING_USER:
+                if typ == STEP_TYPE_ASK_QUESTION:
+                    blob = con.execute("SELECT step_payload FROM steps WHERE idx=?",
+                                       (idx,)).fetchone()[0]
+                    return "attention", question_from_payload(blob)
+                return "waiting", ""
+            if status == STATUS_DONE:
+                break  # newest step finished -> nothing is blocking
+    finally:
+        con.close()
+    return None
+
+
+def pending_user_action(tmpdir: str, active_window: float = 3600):
+    """('attention'|'waiting', message) if any active conversation is
+    blocked on the user, else None."""
+    now = time.time()
+    for root in CONV_ROOTS:
+        for dbp in glob.glob(os.path.join(root, "*.db")):
+            try:
+                if now - os.path.getmtime(dbp) > active_window:
+                    continue
+                r = _read_pending(dbp, tmpdir)
+            except Exception:
+                continue  # DB mid-write; try again next poll
+            if r:
+                return r
+    return None
 
 
 def question_snippet(content: str, limit: int = 120) -> str:
@@ -531,15 +596,26 @@ def main():
                 send_state("done", summ, args)
         threading.Thread(target=bg, daemon=True).start()
 
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="agentwatch-db-")
+    pending = None
+    pending_checked = 0.0
     try:
         while True:
             state, content = tracker.poll()
+            # questions/approvals live only in the conversation DBs, and
+            # they override whatever the transcript suggests
+            if time.time() - pending_checked >= 2:
+                pending_checked = time.time()
+                pending = pending_user_action(tmpdir)
+            if pending:
+                state, content = pending[0], ""
             if state != current:
                 current = state
                 current_msg = ""
-                if state == "attention" and content:
+                if state == "attention" and pending and pending[1]:
                     # show the actual question right away
-                    current_msg = question_snippet(content)
+                    current_msg = question_snippet(pending[1])
                 # buzz immediately; done-summaries follow silently
                 send_state(state, current_msg, args)
                 last_sent = time.time()
