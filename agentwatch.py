@@ -207,8 +207,9 @@ APP_MARKER = os.path.join(HERE, "tools", ".app-installed")
 
 
 def app_bundle():
-    """(js lines to install, fingerprint of what they install)."""
+    """(js lines, src len, icon len, fingerprint, crc32 of app source)."""
     import hashlib
+    import zlib
     with open(WATCH_APP, "rb") as f:
         src = f.read()
     lines = storage_lines("agentwatch.app.js", src)
@@ -225,7 +226,7 @@ def app_bundle():
     # quotes inside \x10 lines (silently drops the whole line)
     lines.append(f"require(\"Storage\").write(\"agentwatch.info\",'{json.dumps(info)}')")
     fp = hashlib.sha1(src + icon + json.dumps(info).encode()).hexdigest()
-    return lines, len(src), len(icon), fp
+    return lines, len(src), len(icon), fp, zlib.crc32(src) & 0xffffffff
 
 
 def beacon_wait(log_pos: int, prefix: str, timeout: float):
@@ -244,8 +245,21 @@ def beacon_wait(log_pos: int, prefix: str, timeout: float):
     return None
 
 
+def wait_reconnect(timeout: float = 90):
+    try:
+        ready = open(DAEMON_LOG).read().count("READY")
+    except OSError:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(3)
+        if open(DAEMON_LOG).read().count("READY") > ready:
+            time.sleep(2)
+            return
+
+
 def install_app(args):
-    lines, src_len, icon_len, fp = app_bundle()
+    lines, src_len, icon_len, fp, src_crc = app_bundle()
     log = WatchLog()
     if send_acked('1', "AWOK", log, args, timeout=4, tries=2):
         # verified path: the watch acks every line
@@ -265,34 +279,36 @@ def install_app(args):
     else:
         # open-loop path: stream slowly, then have the watch broadcast a
         # verification beacon in its advertising name (no return channel
-        # needed — some Mac Bluetooth stacks eat the UART notifications)
+        # needed — some Mac Bluetooth stacks eat the UART notifications).
+        # Verified by CRC of the app source, not just the info file — a
+        # dropped line mid-stream corrupts the app silently otherwise.
         print("no console echo — using open-loop install with beacon verification")
-        unstick(args)
         payload = b"".join(js_line(l) for l in lines)
-        print(f"streaming {len(payload)} bytes ({len(lines)} lines)...")
-        fifo_send(payload, args)
-        wait = len(payload) / 600 + 0.15 * len(lines) + 5
-        print(f"waiting ~{int(wait)}s for transfer + flash writes...")
-        time.sleep(wait)
-        probe = ('var _i=(require("Storage").read("agentwatch.info")||"");'
-                 'NRF.setAdvertising({},{name:"V"+((_i.indexOf("Antigravity")>=0)?"Y":"N")});'
-                 'setTimeout(function(){NRF.setAdvertising({},{name:"Bangle.js"});},12000);'
-                 'NRF.disconnect()')
-        log_pos = os.path.getsize(DAEMON_LOG)
-        fifo_send(js_line(probe), args)
-        beacon = beacon_wait(log_pos, "V", 40)
-        if beacon != "VY":
-            sys.exit(f"verification failed (beacon: {beacon or 'none'}) — "
-                     "not launching; re-run install-app")
-        print("verified on-watch via beacon")
-        # wait for the daemon to reconnect before launching
-        ready = open(DAEMON_LOG).read().count("READY")
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            time.sleep(3)
-            if open(DAEMON_LOG).read().count("READY") > ready:
+        expected = f"VYC{src_crc}"
+        for attempt in range(3):
+            unstick(args)
+            print(f"streaming {len(payload)} bytes ({len(lines)} lines)"
+                  f" (attempt {attempt + 1}/3)...")
+            fifo_send(payload, args)
+            wait = len(payload) / 600 + 0.15 * len(lines) + 5
+            print(f"waiting ~{int(wait)}s for transfer + flash writes...")
+            time.sleep(wait)
+            probe = ('var _i=(require("Storage").read("agentwatch.info")||"");'
+                     'var _c=E.CRC32(require("Storage").read("agentwatch.app.js")||"");'
+                     'NRF.setAdvertising({},{name:"V"+((_i.indexOf("Antigravity")>=0)?"Y":"N")+"C"+_c});'
+                     'setTimeout(function(){NRF.setAdvertising({},{name:"Bangle.js"});},12000);'
+                     'NRF.disconnect()')
+            log_pos = os.path.getsize(DAEMON_LOG)
+            fifo_send(js_line(probe), args)
+            beacon = beacon_wait(log_pos, "V", 40)
+            wait_reconnect()
+            if beacon == expected:
                 break
-        time.sleep(2)
+            print(f"  verify failed (beacon {beacon or 'none'}, wanted {expected})")
+        else:
+            sys.exit("verification failed after 3 attempts — not launching; "
+                     "re-run install-app")
+        print("verified on-watch via beacon (info + app CRC)")
     fifo_send(js_line('load("agentwatch.app.js")'), args)
     print("launched")
     with open(APP_MARKER, "w") as f:
@@ -301,7 +317,7 @@ def install_app(args):
 
 def ensure_app(args):
     """Install the watch app if this exact version isn't known to be on it."""
-    _, _, _, fp = app_bundle()
+    _, _, _, fp, _ = app_bundle()
     try:
         with open(APP_MARKER) as f:
             if f.read().strip() == fp:
