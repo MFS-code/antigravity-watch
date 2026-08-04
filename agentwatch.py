@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Live Antigravity agent status on a Bangle.js 2.
 
-Tails Antigravity's on-disk agent transcripts and pushes state transitions
-(working / waiting / done / idle) to the watch the moment they happen, over a
-persistent BLE connection held by BangleBridge.app (daemon mode, fed through
-a named pipe). The watch runs the bundled `agentwatch` app (watchapp/), which
-draws a status screen and buzzes per state; without the app installed, `done`
-still falls back to a plain buzz + message.
+Watches Antigravity's on-disk state (transcripts + per-conversation sqlite
+DBs + artifact metadata) and pushes state transitions to the watch over a
+persistent BLE connection held by BangleBridge.app. States: idle, working,
+waiting (approval pending, with the command), attention (question or plan
+review, with the text), done (optionally with a Gemini one-line summary).
+
+The default command does everything: builds the bridge if needed, starts
+the connection daemon, installs/updates the watch app over the air, then
+streams states. See README.md.
 
 Usage:
-  python3 agentwatch.py                  # watch transcripts, push states live
-  python3 agentwatch.py install-app      # install the watch app over BLE
-  python3 agentwatch.py set working      # push a state by hand
-  python3 agentwatch.py test             # push a test 'done'
-  python3 agentwatch.py --dry-run        # print instead of BLE
+  python3 agentwatch.py [--summarize]    # the one command; add Gemini summaries
+  python3 agentwatch.py test             # buzz the watch to check the link
+  python3 agentwatch.py set <state>      # push a state by hand
+  python3 agentwatch.py install-app      # force a watch app (re)install
+  python3 agentwatch.py --dry-run        # print states instead of sending
 """
 
 import argparse
@@ -51,8 +54,6 @@ STATUS_DONE = 3
 STATUS_AWAITING_USER = 9
 
 STATES = ("idle", "working", "waiting", "attention", "done")
-# substrings in a step's status that mean "agent is waiting on the user"
-WAITING_MARKERS = ("USER", "PENDING", "AWAIT", "APPROV")
 
 # optional done-summaries (enabled with --summarize; needs a Gemini API key
 # from --gemini-key, $GEMINI_API_KEY, or tools/gemini.key — never committed)
@@ -348,7 +349,6 @@ class StateTracker:
         self.settle = settle
         self.idle_after = idle_after
         self.offsets = {}         # path -> consumed byte offset
-        self.last_step = {}       # path -> last parsed step (any source)
         self.last_model = {}      # path -> last step with source == MODEL
         self.last_model_time = {} # path -> when we observed that model step
         self.last_user_time = {}  # path -> when we observed a USER_* step
@@ -381,7 +381,6 @@ class StateTracker:
                         step = json.loads(line)
                     except ValueError:
                         continue
-                    self.last_step[path] = step
                     if step.get("source") == "MODEL":
                         self.last_model[path] = step
                         self.last_model_time[path] = now
@@ -398,10 +397,6 @@ class StateTracker:
         if not active:
             return "idle", ""
         newest = max(active, key=lambda p: self.last_append[p])
-        step = self.last_step.get(newest) or {}
-        status = str(step.get("status", "")).upper()
-        if status != "DONE" and any(m in status for m in WAITING_MARKERS):
-            return "waiting", ""
         # 'done' keys off the last MODEL step, so trailing SYSTEM/ephemeral
         # steps after the final response can't delay or mask it
         m = self.last_model.get(newest)
@@ -581,9 +576,9 @@ def summarize(content: str, key: str) -> str:
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("command", nargs="?", default="watch",
-                   choices=["watch", "test", "set", "install-app", "setup"])
+                   choices=["watch", "test", "set", "install-app"])
     p.add_argument("value", nargs="?", default=None,
-                   help="state name for 'set' (idle|working|waiting|done)")
+                   help=f"state name for 'set' ({'|'.join(STATES)})")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--name", default="Bangle.js",
                    help="BLE name prefix of the watch")
@@ -611,13 +606,6 @@ def main():
         return
     if args.command == "install-app":
         install_app(args)
-        return
-    if args.command == "setup":
-        ensure_daemon(args)
-        install_app(args)
-        time.sleep(8)
-        send_state("idle", "", args)
-        print("setup complete — run `python3 agentwatch.py` to go live")
         return
 
     if not args.dry_run:
@@ -672,9 +660,12 @@ def main():
             if state != current:
                 current = state
                 current_msg = ""
-                if state in ("attention", "waiting") and pending and pending[1]:
-                    # show the question / command awaiting approval
+                if state == "attention" and pending and pending[1]:
                     current_msg = question_snippet(pending[1])
+                elif state == "waiting" and pending and pending[1]:
+                    # plain truncation: commands contain chars that the
+                    # markdown cleaner would mangle (| > ~ etc.)
+                    current_msg = pending[1][:120]
                 # buzz immediately; done-summaries follow silently
                 send_state(state, current_msg, args)
                 last_sent = time.time()
