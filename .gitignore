@@ -9,3 +9,4 @@ tools/BangleBridge.app/
 tools/daemon.log
 tools/bridge.cmd
 tools/.app-installed
+tools/watcher.log

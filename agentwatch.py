@@ -455,11 +455,13 @@ def _read_pending(dbpath: str, tmpdir: str):
                            "ORDER BY idx DESC LIMIT 3").fetchall()
         for idx, typ, status in rows:
             if status == STATUS_AWAITING_USER:
+                blob = con.execute("SELECT step_payload FROM steps WHERE idx=?",
+                                   (idx,)).fetchone()[0]
                 if typ == STEP_TYPE_ASK_QUESTION:
-                    blob = con.execute("SELECT step_payload FROM steps WHERE idx=?",
-                                       (idx,)).fetchone()[0]
                     return "attention", question_from_payload(blob)
-                return "waiting", ""
+                m = re.search(rb'"CommandLine"\s*:\s*"((?:[^"\\]|\\.)*)"', blob or b"")
+                cmd = m.group(1).decode("utf-8", "replace") if m else ""
+                return "waiting", f"Approve: {cmd}" if cmd else ""
             if status == STATUS_DONE:
                 break  # newest step finished -> nothing is blocking
     finally:
@@ -670,8 +672,8 @@ def main():
             if state != current:
                 current = state
                 current_msg = ""
-                if state == "attention" and pending and pending[1]:
-                    # show the actual question right away
+                if state in ("attention", "waiting") and pending and pending[1]:
+                    # show the question / command awaiting approval
                     current_msg = question_snippet(pending[1])
                 # buzz immediately; done-summaries follow silently
                 send_state(state, current_msg, args)
