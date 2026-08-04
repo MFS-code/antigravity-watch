@@ -481,6 +481,57 @@ def pending_user_action(tmpdir: str, active_window: float = 3600):
                 continue  # DB mid-write; try again next poll
             if r:
                 return r
+    return pending_plan_review()
+
+
+def _last_user_step_time(conv_id: str):
+    """created_at of the newest USER step in a conversation's transcript."""
+    latest = None
+    for root in TRANSCRIPT_ROOTS:
+        path = os.path.join(root, conv_id, ".system_generated", "logs",
+                            "transcript.jsonl")
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    try:
+                        s = json.loads(line)
+                    except ValueError:
+                        continue
+                    if str(s.get("source", "")).startswith("USER"):
+                        t = s.get("created_at") or ""
+                        if latest is None or t > latest:
+                            latest = t
+        except OSError:
+            continue
+    return latest
+
+
+def pending_plan_review(active_window: float = 3600):
+    """('attention', summary) if a plan/artifact awaits user feedback.
+
+    Plan reviews never appear as pending steps: the turn ends normally and
+    the ask lives in the artifact's metadata (requestFeedback: true)."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for root in TRANSCRIPT_ROOTS:  # brain dirs: artifacts live next to logs
+        for meta_path in glob.glob(os.path.join(root, "*", "*.metadata.json")):
+            try:
+                with open(meta_path) as f:
+                    meta = json.load(f)
+                if not (meta.get("requestFeedback") and meta.get("userFacing")):
+                    continue
+                upd = meta.get("updatedAt", "")
+                ts = datetime.datetime.fromisoformat(upd.replace("Z", "+00:00"))
+                if (now - ts).total_seconds() > active_window:
+                    continue
+                conv_id = os.path.basename(os.path.dirname(meta_path))
+                answered = _last_user_step_time(conv_id)
+                if answered and answered > upd:
+                    continue  # the user already responded to this ask
+                name = os.path.basename(meta_path).replace(".metadata.json", "")
+                return "attention", meta.get("summary") or f"Review {name}"
+            except (OSError, ValueError):
+                continue
     return None
 
 
