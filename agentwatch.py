@@ -455,7 +455,13 @@ def _read_pending(dbpath: str, tmpdir: str):
                 if typ == STEP_TYPE_ASK_QUESTION:
                     return "attention", question_from_payload(blob)
                 m = re.search(rb'"CommandLine"\s*:\s*"((?:[^"\\]|\\.)*)"', blob or b"")
-                cmd = m.group(1).decode("utf-8", "replace") if m else ""
+                cmd = ""
+                if m:
+                    raw = m.group(1).decode("utf-8", "replace")
+                    try:  # the value is JSON-escaped (&, \\n, ...)
+                        cmd = json.loads(f'"{raw}"')
+                    except ValueError:
+                        cmd = raw
                 return "waiting", f"Approve: {cmd}" if cmd else ""
             if status == STATUS_DONE:
                 break  # newest step finished -> nothing is blocking
